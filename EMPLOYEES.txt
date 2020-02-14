@@ -1,0 +1,8 @@
+EMPLOYEES
+
+- Bartender (id, pass, name, status, work_station)
+- Candybarmen (id, pass, name, status, work_station)
+- Waiters (id, pass, name, status, work_station)
+- Brewer (id, pass, name, status, work_station)
+- Cooks (id, pass, name, status, work_station)
+- Proprietaries (id, pass, name, status, work_station)
