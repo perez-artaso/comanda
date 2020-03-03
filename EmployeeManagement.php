@@ -10,6 +10,7 @@ class EmployeeManagement {
             
             Validators::validate_work_station($work_station);
             Validators::validate_username($name);
+            Validators::validate_password($password);
 
             $DBCon = DBConnection::NewDBConnection();
             $query = $DBCon->SetQuery('INSERT INTO employees (password, name, work_station) VALUES (?, ?, ?)');
@@ -44,6 +45,8 @@ class EmployeeManagement {
 
     public static function change_password($id, $password, $new_password) {
         try {
+                Validators::validate_password($new_password);
+
                 $DBCon = DBConnection::NewDBConnection();
                 if(self::employee_exists($id)) {
                     if (self::permission_granted($id, $password)) {
@@ -87,6 +90,7 @@ class EmployeeManagement {
                     if ($user["status"] == "1") {
                         $now = new DateTime();
                         $expirationTime = new DateTime('+9 hours');
+                        self::register_action($id, "login");
                         return self::response_formatter(
                             202,
                             JWT::encode(array(
@@ -126,15 +130,38 @@ class EmployeeManagement {
 
     public static function employee_list() {
         try {
+
             $DBCon = DBConnection::NewDBConnection();
             $query = $DBCon->SetQuery('SELECT * FROM employees');
             $query->execute();
-            $employees = $query->fetchAll();
-            return $employees;
+            $employees = $query->fetchAll(PDO::FETCH_ASSOC);
+
+            $formatted_response = array();
+
+            foreach ($employees as $employee) {
+                array_push(
+                    $formatted_response,
+                    array(
+                        "id" => $employee["id"],
+                        "name" => $employee["name"],
+                        "work_station" => $employee["work_station"],
+                        "occupation" => self::verbalize_work_stations($employee["work_station"])
+                    )
+                );
+            }
+
+            return self::response_formatter(
+                200,
+                $formatted_response
+            );
+
+
         } catch(Exception $e) {
-            return false;
+            return self::response_formatter(
+                500,
+                "Ha ocurrido una excepción: " . $e->getMessage()
+            );
         }
-        return true;
     }
 
     public static function delete_employee($id) {
@@ -156,8 +183,13 @@ class EmployeeManagement {
     }
 
     public static function update_employee($id, $name, $work_station) {
-        $DBCon = DBConnection::NewDBConnection();
+       
         try{
+
+            Validators::validate_username($name);
+            Validators::validate_work_station($work_station);
+
+            $DBCon = DBConnection::NewDBConnection();
             $query = $DBCon->SetQuery('UPDATE employees SET name = ?, work_station = ? WHERE id = ?');
             $query->bindValue(1, $name, PDO::PARAM_STR);
             $query->bindValue(2, $work_station, PDO::PARAM_STR);
@@ -178,8 +210,9 @@ class EmployeeManagement {
     }
 
     public static function update_status ($id, $status) {
-
+        
         try {
+            Validators::validate_employee_status($status);
             $DBCon = DBConnection::NewDBConnection();
 
             if ($status == "0" || $status == "1") {
@@ -248,21 +281,33 @@ class EmployeeManagement {
 
     }
 
-    static function get_employee($id) {
-        $DBCon = DBConnection::NewDBConnection();
-        $query = $DBCon->SetQuery("SELECT * FROM employees WHERE id = ?");
-        $query->bindValue(1, $id, PDO::PARAM_INT);
-        $query->execute();
+    public static function get_employee($id) {
 
-        $result = $query->fetchAll();
-
-        return array (
-            "id" => $result[0]["id"],
-            "name" => $result[0]["name"],
-            "work_station" => $result[0]["work_station"],
-            "password" => $result[0]["password"],
-            "status" => $result[0]["status"]
-        );
+        if ( $id != 0) {
+            $DBCon = DBConnection::NewDBConnection();
+            $query = $DBCon->SetQuery("SELECT * FROM employees WHERE id = ?");
+            $query->bindValue(1, $id, PDO::PARAM_INT);
+            $query->execute();
+    
+            $result = $query->fetchAll();
+    
+            return array (
+                "id" => $result[0]["id"],
+                "name" => $result[0]["name"],
+                "work_station" => $result[0]["work_station"],
+                "password" => $result[0]["password"],
+                "status" => $result[0]["status"]
+            );
+        } else {
+            return array (
+                "id" => 0,
+                "name" => "N/N",
+                "work_station" => 0,
+                "password" => "N/N",
+                "status" => 0
+            );
+        }
+        
     }
 
     public static function get_pending_items($token) {
@@ -285,7 +330,20 @@ class EmployeeManagement {
 
         $result = $query->fetchAll(PDO::FETCH_ASSOC);
 
-        return $result;
+        $formatted_response = [];
+
+        foreach ($result as $item) {
+            array_push(
+                $formatted_response,
+                array(
+                    "id" => $item["id"],
+                    "order_id" => $item["order_id"],
+                    "product" => ItemManagement::get_product_name($item["id"])
+                )
+            );
+        }
+
+        return $formatted_response;
     }
 
     public static function get_items_being_prepared($token) {
@@ -420,6 +478,19 @@ class EmployeeManagement {
 
                         $query->execute();
 
+                        $query = $DBCon->SetQuery(
+                            "UPDATE tables SET status = ? WHERE id IN (
+                                SELECT table_id FROM orders WHERE id IN (
+                                    SELECT order_id FROM items WHERE id = ?
+                                )
+                            );"
+                        );
+
+                        $query->bindValue(1, 2, PDO::PARAM_INT);
+                        $query->bindValue(2, $item_id, PDO::PARAM_INT);
+
+                        $query->execute();
+
                         return self::response_formatter (
                             200,
                             "Preparación registrada."
@@ -444,6 +515,296 @@ class EmployeeManagement {
             );
 
         }
+    }
+
+    public static function get_operations_per_sector ($work_station) {
+
+        $DBCon = DBConnection::NewDBConnection();
+
+        $queryString = ($work_station == 2) ? "SELECT COUNT(*) as 'Pedidos' FROM orders" : 
+        "SELECT COUNT(*) as 'Pedidos' FROM items WHERE status = 2 AND product_id IN (SELECT id FROM products WHERE work_station = $work_station)";
+        $query = $DBCon->SetQuery($queryString);
+
+        $query->execute();
+
+        return $query->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    public static function get_sector_amount_of_operations_report() {
+        try {
+            $response = array (
+                "Mozos/as" => self::get_operations_per_sector(2),
+                "Cocina" => self::get_operations_per_sector(3),
+                "Candy Bar" => self::get_operations_per_sector(4),
+                "Choperas" => self::get_operations_per_sector(5),
+                "Bar" => self::get_operations_per_sector(6)
+            );
+            return self::response_formatter(
+                200,
+                $response
+            );
+        } catch (Exception $e) {
+
+            return self::response_formatter (
+                500,
+                "Ha ocurrido una excepción: " . $e->getMessage()
+            );
+
+        }
+    }
+
+    public static function get_operations_per_sector_and_employee() {
+        try {
+
+            $waiters = self::get_employees_per_section(2);
+            $cookery_employees = self::get_employees_per_section(3);
+            $bakery_employees = self::get_employees_per_section(4);
+            $brewery_employees = self::get_employees_per_section(5);
+            $bar_employees = self::get_employees_per_section(6);
+
+            $operations_per_sector = array(
+                "Mozos" => $waiters,
+                "Cocina" => $cookery_employees,
+                "Candy Bar" => $bakery_employees,
+                "Chopera" => $brewery_employees,
+                "Tragos" => $bar_employees
+            );
+
+            foreach ($operations_per_sector as &$sector) {
+                foreach ($sector as &$employee) {
+                    $employee["operations"] = self::get_operation_count($employee["id"], $employee["work_station"]);
+                }
+            }
+
+            return self::response_formatter(
+                200,
+                $operations_per_sector
+            );
+
+
+        } catch (Exception $e) {
+            
+            return self::response_formatter(
+                500,
+                "Ha ocurrido una excepción: " . $e->getMessage()
+            );
+
+        }
+    }
+
+    public static function get_operations_per_employee($employee_id) {
+        try {
+
+            if(self::employee_exists($employee_id)) {
+
+                $employee_data = self::get_employee($employee_id);
+            
+                return self::response_formatter(
+                    200,
+                    array(
+                        "id" => $employee_data["id"],
+                        "name" => $employee_data["name"],
+                        "work_station" => self::verbalize_work_stations($employee_data["work_station"]),
+                        "operations" => self::get_operation_count($employee_data["id"], $employee_data["work_station"])
+                    )
+                );
+            } else throw new Exception ("El empleado indicado no figura en el registro.");
+
+        } catch (Exception $e) {
+
+            return self::response_formatter(
+                500,
+                "Ha ocurrido una excepción: " . $e->getMessage()
+            );
+
+        }
+    }
+
+    static function get_operation_count ($employee_id, $work_station) {
+        $DBCon = DBConnection::NewDBConnection();
+
+        $queryString = ($work_station == 2) ? 
+        "SELECT COUNT(*) FROM orders WHERE taken_by = ?" : 
+        "SELECT COUNT(*) FROM items WHERE taken_by = ? AND status = 2";
+
+        $query = $DBCon->SetQuery($queryString);
+        $query->bindValue(1, $employee_id, PDO::PARAM_INT);
+
+        $query->execute();
+        $count = $query->fetchAll(PDO::FETCH_ASSOC);
+
+        if ($count != []) {
+            return $count[0]["COUNT(*)"];
+        } else return 0;
+    }
+
+    static function get_employees_per_section($work_station) {
+
+        $DBCon = DBConnection::NewDBConnection();
+
+        $query = $DBCon->SetQuery("SELECT id, name, work_station FROM employees WHERE work_station = ?");
+        $query->bindValue(1, $work_station, PDO::PARAM_INT);
+        $query->execute();
+
+        return $query->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    public static function get_login_dates() {
+
+        $DBCon = DBConnection::NewDBConnection();
+        $query = $DBCon->SetQuery("SELECT * FROM logs WHERE action = ?");
+        $query->bindValue(1, "login", PDO::PARAM_STR);
+
+        $query->execute();
+
+        $logins = $query->fetchAll(PDO::FETCH_ASSOC);
+
+        $logins_report = array();
+
+        foreach($logins as $login) {
+            $logins_report[
+                "ID: " . $login["employee_id"] . " (" . self::get_employee($login["employee_id"])["name"] . ")"
+            ][] = date("d/m/Y H:i:s", $login["date"]);
+        }
+
+        return self::response_formatter(
+            200,
+            $logins_report
+        );
+
+    }
+
+    public static function get_monthly_report() {
+        
+        try {
+            $orders = OrderManagement::read_orders();
+
+            $monthly_report = array();
+    
+            foreach ($orders as $order) {
+                $month_and_year = date("m/Y", $order["date"]);
+                $items = ItemManagement::get_items_by_order_id($order["id"]);
+                
+                if (!isset($monthly_report[$month_and_year]["total_amount_of_items"])) {
+                    $monthly_report[$month_and_year]["total_amount_of_items"] = 0;
+                }
+                
+                if (isset($monthly_report[$month_and_year]["items"])) {
+                    
+                    foreach ($items as $item) {
+                        if ($item["status"] == 2) {
+                            array_push($monthly_report[$month_and_year]["items"], $item);
+                            $monthly_report[$month_and_year]["total_amount_of_items"]++;
+                        }                    
+                    }
+    
+                } else {
+    
+                    $monthly_report[$month_and_year]["items"] = [];
+    
+                    foreach ($items as $item) {
+                        if ($item["status"] == 2) {
+                            array_push($monthly_report[$month_and_year]["items"], $item);
+                            $monthly_report[$month_and_year]["total_amount_of_items"]++;
+                        }
+                    }
+                }
+            }
+    
+            foreach ($monthly_report as &$month) {
+                foreach($month["items"] as $item) {
+                    if (isset(
+                        $month[
+                            "ID " . $item["taken_by"] . "(" . self::get_employee($item["taken_by"])["name"].")"
+                        ]
+                    )) {
+                        $month[
+                            "ID " . $item["taken_by"] . "(" . self::get_employee($item["taken_by"])["name"].")"
+                        ]["amount_of_orders_taken"]++;
+                        $month[
+                            "ID " . $item["taken_by"] . "(" . self::get_employee($item["taken_by"])["name"].")"
+                        ]["average"] = (($month[
+                            "ID " . $item["taken_by"] . "(" . self::get_employee($item["taken_by"])["name"].")"
+                        ]["amount_of_orders_taken"] / $month["total_amount_of_items"]) * 100);
+                    } else {
+                        $month[
+                            "ID " . $item["taken_by"] . "(" . self::get_employee($item["taken_by"])["name"].")"
+                        ]["amount_of_orders_taken"] = 1;
+                        $month[
+                            "ID " . $item["taken_by"] . "(" . self::get_employee($item["taken_by"])["name"].")"
+                        ]["average"] = (($month[
+                            "ID " . $item["taken_by"] . "(" . self::get_employee($item["taken_by"])["name"].")"
+                        ]["amount_of_orders_taken"] / $month["total_amount_of_items"]) * 100);
+                    }
+                }
+            }
+    
+            foreach ($monthly_report as &$report) {
+                unset($report["items"]);
+            }
+    
+            return self::response_formatter(
+                200,
+                $monthly_report
+            );
+
+        } catch (Exception $e) {
+
+            return self::response_formatter(
+                500,
+                "Ha ocurrido una excepción: " . $e->getMessage()
+            );
+
+        }
+    }
+
+    public static function verbalize_work_stations($work_station) {
+        switch($work_station) {
+
+            case 1:
+                return "Socio";
+            break;
+
+            case 2:
+                return "Mozo/a";
+            break;
+
+            case 3:
+                return "Cocina";
+            break;
+
+            case 4:
+                return "Postres";
+            break;
+
+            case 5:
+                return "Chopera";
+            break;
+
+            case 6:
+                return "Bar";
+            break;
+
+            case 7:
+                return "Data Entry";
+            break;
+
+            default:
+                "Desconocido";
+            break;
+        }
+    }
+
+    static function register_action($employee_id, $action) {
+
+        $DBCon = DBConnection::NewDBConnection();
+        $query = $DBCon->SetQuery("INSERT INTO logs (employee_id, action, date) VALUES (?, ?, ?)");
+        $query->bindValue(1, $employee_id, PDO::PARAM_INT);
+        $query->bindValue(2, $action, PDO::PARAM_STR);
+        $query->bindValue(3, time(), PDO::PARAM_INT);
+
+        $query->execute();
+
     }
 
     static function get_decoded_jwt_body($jwt) {

@@ -129,6 +129,16 @@ class ProductManagement {
         }
     }
 
+    public static function get_product($id) {
+        $DBCon = DBConnection::NewDBConnection();
+
+        $query = $DBCon->SetQuery("SELECT * FROM products WHERE id = ?");
+        $query->bindValue(1, $id, PDO::PARAM_INT);
+        $query->execute();
+
+        return $query->fetchAll(PDO::FETCH_ASSOC);
+    }
+
     static function product_exists($id) {
         $DBCon = DBConnection::NewDBConnection();
 

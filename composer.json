@@ -2,6 +2,7 @@
     "require": {
         "slim/slim": "^3.0",
         "firebase/php-jwt": "^5.0",
-        "respect/validation": "^1.1"
+        "respect/validation": "^1.1",
+        "mpdf/mpdf": "^8.0"
     }
 }
